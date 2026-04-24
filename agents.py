@@ -1,76 +1,91 @@
-import os
-from crewai import Agent, Task, Crew, Process
-from langchain_ollama import ChatOllama
-from langchain_community.llms import Ollama
-import docker
-import json
-from datetime import datetime
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+DevOps Multi-Agent System - CrewAI Agents Configuration
+Агенты для автоматизации DevOps задач
+"""
 
-# Конфигурация
+import os
+import json
+import logging
+from datetime import datetime
+from typing import List, Optional, Dict, Any
+from pathlib import Path
+
+# CrewAI imports
+from crewai import Agent, Task, Crew, Process
+from crewai_tools import tool  # ✅ Правильный импорт для инструментов
+
+# LLM imports - ✅ Только актуальные
+from langchain_ollama import ChatOllama
+
+# Docker
+import docker
+from docker.errors import DockerException, NotFound, APIError
+
+# Настройка логирования
+logger = logging.getLogger(__name__)
+
+# ==================== КОНФИГУРАЦИЯ ====================
+
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 MODEL_NAME = os.getenv("MODEL_NAME", "mistral")
+LOGS_DIR = Path(os.getenv("LOGS_DIR", "/app/logs"))
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Инициализация LLM через OpenAI-compatible API Ollama
-llm = ChatOllama(
-    base_url=OLLAMA_HOST,
-    model=MODEL_NAME,
-    temperature=0.7
-)
+# ✅ Инициализация LLM через ChatOllama (совместимо с CrewAI)
+def init_llm():
+    """Инициализация LLM с обработкой ошибок"""
+    try:
+        return ChatOllama(
+            base_url=OLLAMA_HOST,
+            model=MODEL_NAME,
+            temperature=0.3,  # Ниже для более точных инструкций
+            top_p=0.9,
+            num_predict=2048
+        )
+    except Exception as e:
+        logger.error(f"Failed to initialize LLM: {e}")
+        raise
 
-# Инициализация Docker клиента
-docker_client = docker.from_env()
+# ✅ Глобальный LLM экземпляр
+llm = init_llm()
 
-# ==================== АГЕНТЫ ====================
+# ✅ Инициализация Docker клиента с обработкой ошибок
+def init_docker_client():
+    """Безопасная инициализация Docker клиента"""
+    try:
+        client = docker.from_env()
+        client.ping()  # Проверка соединения
+        logger.info("✓ Docker client initialized")
+        return client
+    except DockerException as e:
+        logger.warning(f"⚠ Docker not available: {e}. Running in simulation mode.")
+        return None
+    except Exception as e:
+        logger.error(f"✗ Docker initialization error: {e}")
+        return None
 
-# 1. Агент развертывания (Deployment Agent)
-deploy_agent = Agent(
-    role='DevOps Deployment Engineer',
-    goal='Развернуть Docker Compose проекты и управлять контейнерами',
-    backstory="""Ты опытный DevOps инженер, специализирующийся на автоматизации развертывания.
-    Твоя задача - корректно запускать, останавливать и перезапускать контейнеры.""",
-    verbose=True,
-    allow_delegation=False,
-    llm=llm,
-    tools=[]  # Инструменты будут добавлены через функции
-)
+docker_client = init_docker_client()
 
-# 2. Агент анализа логов (Log Analyzer Agent)
-log_analyzer_agent = Agent(
-    role='Senior Log Analyst',
-    goal='Анализировать логи контейнеров, выявлять ошибки и аномалии',
-    backstory="""Ты эксперт по анализу логов с многолетним опытом.
-    Ты умеешь находить корневые причины проблем по логам и предлагать решения.""",
-    verbose=True,
-    allow_delegation=True,
-    llm=llm
-)
+def check_docker_connection() -> bool:
+    """Проверить доступность Docker"""
+    if docker_client is None:
+        return False
+    try:
+        docker_client.ping()
+        return True
+    except:
+        return False
 
-# 3. Агент исправления ошибок (Fix Agent)
-fix_agent = Agent(
-    role='DevOps Troubleshooter',
-    goal='Исправлять ошибки в конфигурациях Docker и кодах приложений',
-    backstory="""Ты мастер решения проблем. Ты анализируешь ошибки и предлагаешь конкретные исправления.
-    Ты умеешь модифицировать docker-compose.yml, Dockerfile и конфигурационные файлы.""",
-    verbose=True,
-    allow_delegation=False,
-    llm=llm
-)
+# ==================== 🛠️ ИНСТРУМЕНТЫ (CrewAI @tool) ====================
 
-# 4. Агент мониторинга (Monitoring Agent)
-monitor_agent = Agent(
-    role='System Health Monitor',
-    goal='Контролировать работоспособность сервисов и метрики производительности',
-    backstory="""Ты круглосуточный монитор систем. Ты отслеживаешь статус контейнеров, 
-    использование ресурсов и доступность сервисов.""",
-    verbose=True,
-    allow_delegation=True,
-    llm=llm
-)
-
-# ==================== ИНСТРУМЕНТЫ ====================
-
-def get_docker_status():
-    """Получить статус всех контейнеров"""
+@tool("get_docker_status")
+def get_docker_status() -> str:
+    """Получить статус всех контейнеров. Возвращает JSON со списком контейнеров."""
+    if docker_client is None:
+        return json.dumps({"error": "Docker not available", "simulation_mode": True}, indent=2)
+    
     try:
         containers = docker_client.containers.list(all=True)
         status = []
@@ -78,86 +93,182 @@ def get_docker_status():
             status.append({
                 'name': c.name,
                 'status': c.status,
-                'image': c.image.tags[0] if c.image.tags else c.image.id[:12],
-                'ports': c.ports,
-                'created': str(c.created_at)
+                'image': c.image.tags[0] if c.image.tags else c.image.short_id,
+                'ports': c.ports or {},
+                'created': c.attrs.get('Created', 'unknown'),
+                'state': c.attrs.get('State', {}).get('Status', 'unknown')
             })
         return json.dumps(status, indent=2, ensure_ascii=False)
     except Exception as e:
-        return f"Error: {str(e)}"
+        logger.error(f"Error getting docker status: {e}")
+        return json.dumps({"error": str(e)}, indent=2)
 
-def get_container_logs(container_name, tail=100):
-    """Получить логи конкретного контейнера"""
+@tool("get_container_logs")
+def get_container_logs(container_name: str, tail: int = 100) -> str:
+    """Получить логи контейнера. Параметры: container_name (str), tail (int, default=100)."""
+    if docker_client is None:
+        return f"[SIMULATION] Would get last {tail} lines from '{container_name}'"
+    
     try:
         container = docker_client.containers.get(container_name)
-        logs = container.logs(tail=tail).decode('utf-8')
-        return logs
-    except docker.errors.NotFound:
-        return f"Container '{container_name}' not found"
+        logs = container.logs(tail=tail, stderr=True, stdout=True).decode('utf-8', errors='replace')
+        return logs if logs else "[No logs available]"
+    except NotFound:
+        return f"Error: Container '{container_name}' not found"
     except Exception as e:
+        logger.error(f"Error getting logs for {container_name}: {e}")
         return f"Error: {str(e)}"
 
-def start_container(container_name):
-    """Запустить контейнер"""
+@tool("start_container")
+def start_container(container_name: str, timeout: int = 10) -> str:
+    """Запустить контейнер. Параметры: container_name (str), timeout (int, seconds)."""
+    if docker_client is None:
+        return f"[SIMULATION] Would start container '{container_name}'"
+    
     try:
         container = docker_client.containers.get(container_name)
         container.start()
-        return f"Container '{container_name}' started successfully"
+        logger.info(f"Container '{container_name}' started")
+        return f"✓ Container '{container_name}' started successfully"
+    except NotFound:
+        return f"Error: Container '{container_name}' not found"
     except Exception as e:
-        return f"Error starting container: {str(e)}"
+        logger.error(f"Error starting {container_name}: {e}")
+        return f"Error: {str(e)}"
 
-def stop_container(container_name):
-    """Остановить контейнер"""
+@tool("stop_container")
+def stop_container(container_name: str, timeout: int = 10) -> str:
+    """Остановить контейнер. Параметры: container_name (str), timeout (int, seconds)."""
+    if docker_client is None:
+        return f"[SIMULATION] Would stop container '{container_name}'"
+    
     try:
         container = docker_client.containers.get(container_name)
-        container.stop()
-        return f"Container '{container_name}' stopped successfully"
+        container.stop(timeout=timeout)
+        logger.info(f"Container '{container_name}' stopped")
+        return f"✓ Container '{container_name}' stopped successfully"
+    except NotFound:
+        return f"Error: Container '{container_name}' not found"
     except Exception as e:
-        return f"Error stopping container: {str(e)}"
+        logger.error(f"Error stopping {container_name}: {e}")
+        return f"Error: {str(e)}"
 
-def restart_container(container_name):
-    """Перезапустить контейнер"""
+@tool("restart_container")
+def restart_container(container_name: str, timeout: int = 10) -> str:
+    """Перезапустить контейнер. Параметры: container_name (str), timeout (int, seconds)."""
+    if docker_client is None:
+        return f"[SIMULATION] Would restart container '{container_name}'"
+    
     try:
         container = docker_client.containers.get(container_name)
-        container.restart()
-        return f"Container '{container_name}' restarted successfully"
+        container.restart(timeout=timeout)
+        logger.info(f"Container '{container_name}' restarted")
+        return f"✓ Container '{container_name}' restarted successfully"
+    except NotFound:
+        return f"Error: Container '{container_name}' not found"
     except Exception as e:
-        return f"Error restarting container: {str(e)}"
+        logger.error(f"Error restarting {container_name}: {e}")
+        return f"Error: {str(e)}"
 
-def deploy_compose(project_name, compose_content):
-    """Развернуть Docker Compose проект (симуляция через запись файла)"""
+@tool("deploy_compose")
+def deploy_compose(project_name: str, compose_content: str, dry_run: bool = True) -> str:
+    """
+    Развернуть Docker Compose проект.
+    Параметры:
+    - project_name: имя проекта
+    - compose_content: содержимое docker-compose.yml
+    - dry_run: если True, только валидация без реального деплоя
+    """
     try:
-        # В реальном сценарии здесь был бы вызов docker-compose up
-        # Для безопасности записываем конфиг в файл для проверки
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"/app/logs/compose_{project_name}_{timestamp}.yml"
-        with open(filename, 'w') as f:
-            f.write(compose_content)
-        return f"Compose configuration saved to {filename}. Ready for deployment review."
+        # Валидация базового синтаксиса
+        if 'version:' not in compose_content and 'services:' not in compose_content:
+            return "Error: Invalid compose format - missing 'version' or 'services'"
+        
+        if dry_run or docker_client is None:
+            # Симуляция: сохраняем конфиг для аудита
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = LOGS_DIR / f"compose_{project_name}_{timestamp}.yml"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(f"# Validated at {datetime.now().isoformat()}\n")
+                f.write(f"# dry_run={dry_run}, docker_available={docker_client is not None}\n\n")
+                f.write(compose_content)
+            return f"✓ Compose configuration validated and saved to {filename}. {'Ready for manual review.' if dry_run else 'Deploy simulation complete.'}"
+        
+        # Реальный деплой (только если dry_run=False и Docker доступен)
+        # ⚠️ В продакшене здесь нужен строгий аудит и sandbox
+        import subprocess
+        import tempfile
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as tmp:
+            tmp.write(compose_content)
+            tmp_path = tmp.name
+        
+        try:
+            result = subprocess.run(
+                ['docker-compose', '-f', tmp_path, '-p', project_name, 'up', '-d', '--remove-orphans'],
+                capture_output=True, text=True, timeout=300
+            )
+            if result.returncode == 0:
+                logger.info(f"Project '{project_name}' deployed successfully")
+                return f"✓ Project '{project_name}' deployed successfully\n{result.stdout}"
+            else:
+                return f"Error deploying project: {result.stderr}"
+        finally:
+            os.unlink(tmp_path)
+            
     except Exception as e:
-        return f"Error deploying compose: {str(e)}"
+        logger.error(f"Error in deploy_compose: {e}")
+        return f"Error: {str(e)}"
 
-def check_service_health(service_name, port=None):
-    """Проверить здоровье сервиса"""
+@tool("check_service_health")
+def check_service_health(service_name: str, port: Optional[int] = None) -> str:
+    """
+    Проверить здоровье сервиса.
+    Параметры: service_name (str), port (int, optional)
+    """
+    if docker_client is None:
+        return json.dumps({
+            "name": service_name,
+            "status": "unknown",
+            "simulation_mode": True
+        }, indent=2)
+    
     try:
         container = docker_client.containers.get(service_name)
+        attrs = container.attrs
+        state = attrs.get('State', {})
+        
         health = {
             'name': service_name,
             'status': container.status,
-            'running': container.status == 'running'
+            'running': container.status == 'running',
+            'restart_count': state.get('RestartCount', 0),
+            'finished_at': state.get('FinishedAt', 'N/A')
         }
         
-        if container.attrs.get('State', {}).get('Health'):
-            health['health_status'] = container.attrs['State']['Health']['Status']
+        # Healthcheck из Docker
+        if 'Health' in state:
+            health['health_status'] = state['Health']['Status']
+            health['health_log'] = state['Health'].get('Log', [])[-3:]  # Последние 3 проверки
         
-        return json.dumps(health, indent=2)
-    except docker.errors.NotFound:
-        return f"Service '{service_name}' not found"
+        # Проверка порта (если указан)
+        if port:
+            port_bindings = container.attrs.get('NetworkSettings', {}).get('Ports', {})
+            port_key = f"{port}/tcp"
+            health['port_exposed'] = port_key in port_bindings
+            if port_bindings.get(port_key):
+                health['port_mapping'] = port_bindings[port_key]
+        
+        return json.dumps(health, indent=2, ensure_ascii=False)
+        
+    except NotFound:
+        return json.dumps({"error": f"Service '{service_name}' not found"}, indent=2)
     except Exception as e:
-        return f"Error checking health: {str(e)}"
+        logger.error(f"Error checking health of {service_name}: {e}")
+        return json.dumps({"error": str(e)}, indent=2)
 
-# Экспорт инструментов для использования в tasks.py
-DOCKER_TOOLS = [
+# ✅ Список инструментов для экспорта
+ALL_DOCKER_TOOLS = [
     get_docker_status,
     get_container_logs,
     start_container,
@@ -167,184 +278,93 @@ DOCKER_TOOLS = [
     check_service_health
 ]
 
-# ==================== ЗАДАЧИ ====================
+# ==================== 👥 АГЕНТЫ ====================
 
-def create_deploy_task(compose_config):
+def create_deploy_agent():
+    """Создать агента развертывания с инструментами"""
+    return Agent(
+        role='DevOps Deployment Engineer',
+        goal='Безопасно развернуть и управлять Docker Compose проектами',
+        backstory="""Ты опытный DevOps инженер с экспертизой в контейнеризации.
+Ты всегда проверяешь конфигурации перед применением, соблюдаешь best practices
+и минимизируешь downtime при обновлениях.""",
+        verbose=True,
+        allow_delegation=False,
+        llm=llm,
+        tools=[deploy_compose, get_docker_status, check_service_health],  # ✅ Инструменты подключены
+        max_iter=10
+    )
+
+def create_log_analyzer_agent():
+    """Создать агента анализа логов"""
+    return Agent(
+        role='Senior Log Analyst',
+        goal='Выявлять корневые причины проблем через анализ логов',
+        backstory="""Ты эксперт по observability с 10+ лет опыта.
+Ты умеешь отличать шум от реальных проблем, находишь паттерны
+в логах и предлагаешь конкретные действия для исправления.""",
+        verbose=True,
+        allow_delegation=True,
+        llm=llm,
+        tools=[get_container_logs, get_docker_status],  # ✅ Инструменты подключены
+        max_iter=15
+    )
+
+def create_fix_agent():
+    """Создать агента исправления ошибок"""
+    return Agent(
+        role='DevOps Troubleshooter',
+        goal='Предлагать и применять безопасные исправления конфигураций',
+        backstory="""Ты мастер root cause analysis. Ты не просто чинишь симптомы,
+а находишь и устраняешь корневые причины. Ты всегда предлагаешь
+минимально инвазивные исправления с откатом.""",
+        verbose=True,
+        allow_delegation=False,
+        llm=llm,
+        tools=[deploy_compose, start_container, stop_container, restart_container, check_service_health],
+        max_iter=12
+    )
+
+def create_monitor_agent():
+    """Создать агента мониторинга"""
+    return Agent(
+        role='System Health Monitor',
+        goal='Круглосуточно отслеживать здоровье сервисов и метрики',
+        backstory="""Ты автоматизированный SRE-ассистент. Ты проактивно
+обнаруживаешь аномалии, отслеживаешь SLA/SLO и генерируешь
+действенные алерты без ложных срабатываний.""",
+        verbose=True,
+        allow_delegation=True,
+        llm=llm,
+        tools=[get_docker_status, check_service_health, get_container_logs],
+        max_iter=8
+    )
+
+# Кэширование агентов
+_agents_cache = {}
+
+def get_agent(name: str):
+    """Получить или создать агента по имени"""
+    if name not in _agents_cache:
+        creators = {
+            'deploy': create_deploy_agent,
+            'log_analyzer': create_log_analyzer_agent,
+            'fix': create_fix_agent,
+            'monitor': create_monitor_agent
+        }
+        if name in creators:
+            _agents_cache[name] = creators[name]()
+        else:
+            raise ValueError(f"Unknown agent: {name}")
+    return _agents_cache[name]
+
+# ==================== 📋 ЗАДАЧИ ====================
+
+def create_deploy_task(compose_config: str, project_name: str, dry_run: bool = True) -> Task:
     return Task(
         description=f"""
-        Проанализируй конфигурацию Docker Compose и выполни развертывание:
-        
-        Конфигурация:
-        {compose_config}
-        
-        Шаги:
-        1. Проверь синтаксис и валидность конфигурации
-        2. Определи необходимые образы и их версии
-        3. Проверь конфликты портов
-        4. Разверни сервисы в правильном порядке
-        5. Убедись, что все контейнеры запущены
-        
-        Верни подробный отчет о процессе развертывания.
-        """,
-        expected_output="Отчет о развертывании со статусом каждого сервиса",
-        agent=deploy_agent
-    )
+Проанализируй и выполни развертывание Docker Compose проекта.
 
-def create_analyze_logs_task(container_names):
-    return Task(
-        description=f"""
-        Проанализируй логи указанных контейнеров на наличие ошибок:
-        
-        Контейнеры: {', '.join(container_names)}
-        
-        Задачи:
-        1. Получи последние 200 строк логов каждого контейнера
-        2. Найди ошибки (ERROR, FATAL, CRITICAL, Exception)
-        3. Выяви предупреждения (WARNING, WARN)
-        4. Определи паттерны повторяющихся ошибок
-        5. Предложи гипотезы о причинах проблем
-        
-        Верни структурированный анализ с приоритетами проблем.
-        """,
-        expected_output="Структурированный отчет об ошибках с рекомендациями",
-        agent=log_analyzer_agent
-    )
-
-def create_fix_task(error_report):
-    return Task(
-        description=f"""
-        На основе отчета об ошибках предложи и примени исправления:
-        
-        Отчет об ошибках:
-        {error_report}
-        
-        Действия:
-        1. Определи корневую причину каждой критической ошибки
-        2. Предложи конкретные исправления (изменение конфига, перезапуск, обновление образа)
-        3. Если требуется - создай исправленную версию docker-compose.yml
-        4. Примени исправления, которые можно выполнить безопасно
-        5. Перезапусти затронутые сервисы
-        
-        Верни отчет о примененных исправлениях и результатах.
-        """,
-        expected_output="Отчет о примененных исправлениях и текущем статусе системы",
-        agent=fix_agent
-    )
-
-def create_monitor_task():
-    return Task(
-        description="""
-        Проведи полную проверку здоровья системы:
-        
-        1. Получи статус всех контейнеров
-        2. Проверь использование ресурсов (CPU, память) для каждого сервиса
-        3. Проверь доступность портов
-        4. Выяви сервисы в состоянии restart loop или error
-        5. Проверь логи на свежие ошибки (последние 50 строк)
-        
-        Верни дашборд состояния системы с оценкой здоровья (0-100%).
-        """,
-        expected_output="Дашборд состояния системы с метриками и рекомендациями",
-        agent=monitor_agent
-    )
-
-# ==================== ОРКЕСТРАЦИЯ ====================
-
-class DevOpsCrew:
-    def __init__(self):
-        self.crew = None
-    
-    def run_deployment(self, compose_config):
-        """Запустить процесс развертывания"""
-        task = create_deploy_task(compose_config)
-        crew = Crew(
-            agents=[deploy_agent],
-            tasks=[task],
-            verbose=True,
-            process=Process.sequential
-        )
-        result = crew.kickoff()
-        return result
-    
-    def run_log_analysis(self, container_names):
-        """Запустить анализ логов"""
-        task = create_analyze_logs_task(container_names)
-        crew = Crew(
-            agents=[log_analyzer_agent],
-            tasks=[task],
-            verbose=True,
-            process=Process.sequential
-        )
-        result = crew.kickoff()
-        return result
-    
-    def run_fix_procedure(self, error_report):
-        """Запустить процедуру исправления"""
-        task = create_fix_task(error_report)
-        crew = Crew(
-            agents=[fix_agent],
-            tasks=[task],
-            verbose=True,
-            process=Process.sequential
-        )
-        result = crew.kickoff()
-        return result
-    
-    def run_health_check(self):
-        """Запустить проверку здоровья"""
-        task = create_monitor_task()
-        crew = Crew(
-            agents=[monitor_agent],
-            tasks=[task],
-            verbose=True,
-            process=Process.sequential
-        )
-        result = crew.kickoff()
-        return result
-    
-    def run_full_cycle(self, compose_config=None):
-        """Запустить полный цикл: деплой -> мониторинг -> анализ -> исправление"""
-        results = {}
-        
-        # Этап 1: Развертывание
-        if compose_config:
-            print("🚀 Этап 1: Развертывание...")
-            results['deployment'] = self.run_deployment(compose_config)
-        
-        # Этап 2: Мониторинг
-        print("📊 Этап 2: Мониторинг...")
-        results['health_check'] = self.run_health_check()
-        
-        # Этап 3: Анализ логов
-        print("🔍 Этап 3: Анализ логов...")
-        try:
-            containers = docker_client.containers.list()
-            container_names = [c.name for c in containers]
-            if container_names:
-                results['log_analysis'] = self.run_log_analysis(container_names)
-        except Exception as e:
-            results['log_analysis'] = f"Error getting containers: {str(e)}"
-        
-        # Этап 4: Исправление (если найдены ошибки)
-        if 'log_analysis' in results and 'ERROR' in str(results['log_analysis']):
-            print("🔧 Этап 4: Исправление ошибок...")
-            results['fixes'] = self.run_fix_procedure(results['log_analysis'])
-        
-        return results
-
-# Экспорт для app.py
-def get_crew_instance():
-    return DevOpsCrew()
-
-if __name__ == "__main__":
-    # Тестовый запуск
-    print("DevOps Multi-Agent System initialized")
-    print(f"Connected to Ollama at: {OLLAMA_HOST}")
-    print(f"Model: {MODEL_NAME}")
-    
-    # Проверка подключения к Docker
-    try:
-        docker_client.ping()
-        print("✓ Connected to Docker daemon")
-    except Exception as e:
-        print(f"✗ Docker connection failed: {e}")
+📋 Конфигурация проекта "{project_name}":
+```yaml
+{compose_config}
