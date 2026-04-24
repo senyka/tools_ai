@@ -1,23 +1,35 @@
-# Core AI & Agents
-crewai==0.28.0
-langchain==0.1.9
-langchain-community==0.0.24
-langchain-ollama==0.1.0
+# Core AI & Agents - обновлённые версии для совместимости
+crewai>=0.30.0,<0.40.0
+crewai-tools>=0.1.0
+langchain>=0.1.0,<0.3.0
+langchain-community>=0.0.30
+langchain-ollama>=0.1.0
 
 # LLM Integration
-ollama==0.1.6
-openai==1.12.0  # Для совместимости с локальными провайдерами
+ollama>=0.1.7
+# openai не требуется для локального Ollama, но оставляем для совместимости
+openai>=1.12.0
 
 # Docker Management
-docker==7.0.0
+docker>=7.0.0,<8.0.0
 
 # Web Framework
-fastapi==0.109.2
-uvicorn[standard]==0.27.1
-streamlit==1.31.0
-requests==2.31.0
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+streamlit>=1.31.0
+requests>=2.31.0
 
 # Utilities
-python-dotenv==1.0.1
-pydantic==2.6.1
-tenacity==8.2.3
+python-dotenv>=1.0.1
+pydantic>=2.6.0,<3.0.0
+tenacity>=8.2.0
+pyyaml>=6.0  # Для парсинга compose-файлов
+
+# Monitoring & Logging
+prometheus-client>=0.19.0  # Опционально для метрик
+
+# Development (не устанавливаются в production)
+# pytest>=7.4.0
+# pytest-asyncio>=0.23.0
+# black>=24.1.0
+# flake8>=7.0.0
