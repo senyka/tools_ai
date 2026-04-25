@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  # 1. Локальная LLM (Ollama)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: devops_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. Backend с агентами CrewAI
+  crewai_backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: devops_crew
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - MODEL_NAME=mistral
+      - OPENAI_API_KEY=sk-no-key-required # Трюк для работы CrewAI с локальным Ollama
+      - OPENAI_API_BASE=http://ollama:11434/v1
+      - LOG_LEVEL=INFO
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # Доступ к Docker хоста
+      - ./logs:/app/logs
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    command: python app.py
+
+  # 3. Веб-интерфейс (Streamlit)
+  web_ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    container_name: devops_ui
+    depends_on:
+      - crewai_backend
+    environment:
+      - BACKEND_URL=http://crewai_backend:8000
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    command: streamlit run web_ui.py --server.address=0.0.0.0
+
+  # 4. Фоновый наблюдатель (Watcher)
+  watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: devops_watcher
+    depends_on:
+      - crewai_backend
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - OPENAI_API_KEY=sk-no-key-required
+      - OPENAI_API_BASE=http://ollama:11434/v1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./logs:/app/logs
+    restart: unless-stopped
+    command: python watcher.py
+
+volumes:
+  ollama_data:
