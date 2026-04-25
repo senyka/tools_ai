@@ -4,8 +4,10 @@ import json
 import time
 from datetime import datetime
 
+import os
+
 # Конфигурация
-BACKEND_URL = "http://crewai_backend:8000"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://crewai_backend:8800")
 
 st.set_page_config(
     page_title="DevOps Multi-Agent System",
@@ -191,12 +193,12 @@ services:
                     "compose_config": compose_config,
                     "project_name": project_name
                 }
-                response = requests.post(f"{BACKEND_URL}/deploy", json=payload, timeout=120)
+                response = requests.post(f"{BACKEND_URL}/deploy", json=payload, timeout=300)
                 result = response.json()
                 
                 if result.get('status') == 'success':
                     st.success("✅ Развертывание успешно!")
-                    st.expander("📄 Отчет агента").write(result.get('result', 'Нет данных'))
+                    st.expander("📄 Отчет агента").write(result.get('data', {}).get('result', 'Нет данных'))
                     st.session_state['last_update'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 else:
                     st.error(f"❌ Ошибка: {result.get('detail', 'Неизвестная ошибка')}")
@@ -211,6 +213,7 @@ with tab3:
     st.header("📝 Анализ логов")
     
     # Выбор контейнера
+    container_names = []
     try:
         containers_response = requests.get(f"{BACKEND_URL}/containers", timeout=10)
         containers = containers_response.json().get('containers', [])
