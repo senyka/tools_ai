@@ -1,9 +1,10 @@
-# Core AI & Agents - обновлённые версии для совместимости
-crewai>=0.30.0,<0.40.0
-crewai-tools>=0.1.0
-langchain>=0.1.0,<0.3.0
-langchain-community>=0.0.30
-langchain-ollama>=0.1.0
+# Core AI & Agents - стабильная связка для crewai 0.30.x
+crewai==0.30.11
+crewai-tools==0.2.6
+langchain==0.1.20
+langchain-community==0.0.38
+# langchain-ollama удален из-за конфликта зависимостей, используем langchain-community
+langchain-core==0.1.53
 
 # LLM Integration
 ollama>=0.1.7
