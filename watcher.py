@@ -54,7 +54,14 @@ class HealthWatcher:
     
     def __init__(self, interval: int = 60):
         self.interval = interval
-        self.crew = get_crew_instance()
+        from agents import get_agent, Task
+        agent = get_agent('monitor')
+        task = Task(
+            description="Проверь состояние всех сервисов в Docker и найди аномалии или ошибки в логах.",
+            expected_output="Отчет о здоровье системы с рекомендациями по исправлению.",
+            agent=agent
+        )
+        self.crew = get_crew_instance([agent], [task])
         self.last_alert_time: Optional[datetime] = None
         self.alert_cooldown = timedelta(minutes=5)  # Не спамить алертами
         logger.info(f"HealthWatcher initialized (interval={interval}s)")
