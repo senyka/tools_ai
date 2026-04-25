@@ -16,8 +16,8 @@ from pathlib import Path
 from crewai import Agent, Task, Crew, Process
 from crewai_tools import tool  # ✅ Правильный импорт для инструментов
 
-# LLM imports - ✅ Только актуальные
-from langchain_ollama import ChatOllama
+# LLM imports - ✅ Стабильный импорт через community
+from langchain_community.chat_models import ChatOllama
 
 # Docker
 import docker
@@ -35,14 +35,12 @@ LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ✅ Инициализация LLM через ChatOllama (совместимо с CrewAI)
 def init_llm():
-    """Инициализация LLM с обработкой ошибок"""
+    """Инициализация LLM с базовыми параметрами для устранения WARN в Ollama"""
     try:
         return ChatOllama(
             base_url=OLLAMA_HOST,
             model=MODEL_NAME,
-            temperature=0.3,  # Ниже для более точных инструкций
-            top_p=0.9,
-            num_predict=2048
+            temperature=0.1,  # Минимальная температура для стабильности DevOps задач
         )
     except Exception as e:
         logger.error(f"Failed to initialize LLM: {e}")
@@ -368,3 +366,23 @@ def create_deploy_task(compose_config: str, project_name: str, dry_run: bool = T
 📋 Конфигурация проекта "{project_name}":
 ```yaml
 {compose_config}
+```
+
+Действия:
+1. Проверь синтаксис YAML.
+2. Если dry_run=True, только провалидируй и сохрани конфиг.
+3. Если dry_run=False, выполни деплой через инструмент deploy_compose.
+
+Результат должен содержать подробный отчет о выполненных действиях.""",
+        expected_output="Отчет о развертывании проекта с деталями валидации и статусом контейнеров.",
+        agent=get_agent('deploy')
+    )
+
+def get_crew_instance(agents_list: List[Agent], tasks_list: List[Task]) -> Crew:
+    """Создать экземпляр Crew для выполнения задач"""
+    return Crew(
+        agents=agents_list,
+        tasks=tasks_list,
+        process=Process.sequential,
+        verbose=True
+    )
